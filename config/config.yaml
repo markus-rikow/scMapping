@@ -1,0 +1,76 @@
+paths: 
+    raw_data:
+        tumor: data/raw/GSE178341_crc10x_full_c295v4_submit.h5
+        tumor_metadata: data/raw/metatable_v3_fix_v3.tsv
+        tumor_label: data/raw/crc10x_tSNE_cl_global.tsv
+        cell_line: data/raw/SCP542_UMIcount_data.txt
+        gene_anno: data/raw/geneAnno.csv
+        
+    processed:
+        genes_combined: data/processed/genes_combined.csv
+        pp_cell_line: data/processed/preprocessed_cell_line.h5ad
+        pp_tumor: data/processed/preprocessed_tumor.h5ad
+        preprocessing_report: data/processed/preprocessing_report.json
+        
+    models: models
+
+    hpo:
+        configs: models/hpo/configs.json
+        runs: models/hpo/runs
+        results: models/hpo/results.csv
+
+preprocessing:
+    # "donor_chemistry": C130/C171 lesions (TA/TB) share one batch (analysis batch design)
+    # "donor_sample_chemistry": keep TA/TB lesions of C130/C171 as separate batches
+    tumor_batch_style: donor_chemistry
+
+hpo:
+    # Run design.
+    # 17 configs per HVG * 3 HVG levels = 51 configs per approach.
+    hvg_grid: [3000, 5000, 10000]
+    n_configs_per_hvg: 17
+    seed: 0
+    hvg_flavor: seurat_v3
+    hvg_batch_key: dataset
+    scib_n_cells: 10000
+
+    search_space:
+        n_layers: [1, 2, 3]
+        n_hidden: [128, 256]
+        n_latent: [10, 20, 30]
+        dispersion: [gene, gene-batch]
+        encode_covariates: [true, false]
+        # null = fully supervised, imbalanced labeled pool (majority classes
+        # dominate the classifier) kept as reference; 500 = per-label balanced
+        # pool (drawn per label via np.random.choice).
+        n_samples_per_label: [null, 500]
+
+    fixed:
+        gene_likelihood: zinb
+        use_observed_lib_size: true
+        deeply_inject_covariates: true
+        # Hard cap; early stopping (patience 15) on elbo_validation normally
+        # fires well before this. A run that hits the cap shows n_epochs ==
+        # 400 in results.csv - the matching scores (kNN mixing/entropy) depend
+        # on the latent geometry, which converges much faster than the
+        # classifier.
+        max_epochs: 400
+        early_stopping: true
+        early_stopping_patience: 15
+        batch_size: 256
+        lr: 0.002
+        n_epochs_kl_warmup:
+            joint: 50
+            # Gentler KL ramp for the scArches query: only newly added batch
+            # parameters are trainable, so the validation ELBO follows the
+            # warmup schedule (decreases as the KL weight ramps) and early
+            # stopping must not fire before the ramp is done. Every model's
+            # early_stopping_warmup_epochs is set to its own KL warmup
+            # duration. The query additionally trains with
+            # load_best_on_end=False: its min-ELBO checkpoint is a
+            # mid-warmup artifact, so the final (post-warmup) state is kept.
+            scarches: 100
+        batch_key: batch
+        labels_key: label
+        unlabeled_category: Unknown
+        k_values: [20, 50, 100, 200]

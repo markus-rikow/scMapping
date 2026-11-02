@@ -171,6 +171,10 @@ def attach_paper_extra_metadata(adata):
             continue
         adata.obs[column] = adata.obs["donor_id"].map(df_donor_meta[column])
 
+    # C132: the paper reports "female" while the raw TSV metadata say "male".
+    # Keep the source discrepancy explicit instead of silently choosing one.
+    adata.obs.loc[adata.obs["donor_id"].eq("C132"), "sex"] = "mismatch"
+
     return adata
 
 

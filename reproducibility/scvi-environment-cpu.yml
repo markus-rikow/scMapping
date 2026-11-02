@@ -1,4 +1,4 @@
-name: scvi
+name: scvi-cpu
 # CPU-only variant of scvi-environment.yml: no CUDA wheels, no nvidia-* or
 # triton packages, torch runs on CPU (torch.cuda.is_available() is False).
 # torch/torchaudio/torchvision are pinned to the +cpu wheels from the

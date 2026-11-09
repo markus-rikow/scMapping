@@ -290,3 +290,45 @@ def plot_subpopulation_umap(
         del adata.obs["_bio_subpop_plot"], adata.obs["_bio_label_plot"]
     return fig
 
+def plot_tumor_gsea_heatmap(
+    results_gsea_tumor,
+    selected_subpops,
+    n_top=20,
+    path=None,
+    title="Hallmark programs of candidate tumor subpopulations",
+):
+    focus = results_gsea_tumor.loc[
+        results_gsea_tumor["subpopulation"].isin(selected_subpops)
+    ].copy()
+    pathway_strength = (
+        focus.groupby("pathway")["nes"]
+        .apply(lambda values: values.abs().max())
+        .sort_values(ascending=False)
+    )
+    pathways = pathway_strength.head(n_top).index.tolist()
+    heatmap = (
+        focus[focus["pathway"].isin(pathways)]
+        .pivot(index="subpopulation", columns="pathway", values="nes")
+        .reindex(index=selected_subpops, columns=pathways)
+    )
+
+    fig, ax = plt.subplots(figsize=(18, 5.5))
+    sns.heatmap(
+        heatmap,
+        ax=ax,
+        cmap="RdBu_r",
+        center=0,
+        annot=True,
+        fmt=".1f",
+        linewidths=0.3,
+        cbar_kws={"label": "GSEA normalized enrichment score (NES)"},
+    )
+    ax.set_title(title)
+    ax.set_xlabel("Hallmark pathway")
+    ax.set_ylabel("")
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+    ax.tick_params(axis="y", labelrotation=0)
+    plt.tight_layout()
+    if path is not None:
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+    return fig

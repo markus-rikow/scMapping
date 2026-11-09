@@ -19,6 +19,14 @@ paths:
         runs: models/hpo/runs
         results: models/hpo/results.csv
 
+    bio:
+        joint_artifact: notebooks/4_biological_plausibility/adata_config10_joint/config10_joint_3k.h5ad
+        hallmark_gmt: data/Gene_sets/h_cleaned.all.v2023.1.Hs.symbols.gmt
+        figures: figures/BIOVAL
+        de_joint: models/validation/bio_joint_cfg10/de_signatures
+        de_scarches: models/validation/bio_scarches_cfg47/de_signatures
+        model_concordance: models/validation/model_concordance
+
 preprocessing:
     # "donor_chemistry": C130/C171 lesions (TA/TB) share one batch (analysis batch design)
     # "donor_sample_chemistry": keep TA/TB lesions of C130/C171 as separate batches
@@ -74,3 +82,18 @@ hpo:
         labels_key: label
         unlabeled_category: Unknown
         k_values: [20, 50, 100, 200]
+
+bio:
+    # Post-HPO analyses only; these values do not affect the frozen HPO sweep.
+    matching:
+        k: 50
+        k_sensitivity: [15, 50, 100]
+        margin: 0.10
+    mlm:
+        tmin: 15
+        raw: false
+        library_size: 10000
+    gsea:
+        permutations: 1000
+        min_size: 15
+        max_size: 500

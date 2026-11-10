@@ -425,3 +425,162 @@ def pathway_similarity_evaluation(
         )
     null_summary = pd.DataFrame(null_frames).sort_values("observed_median_rank")
     return rank_readouts, rank_summary, null_summary, similarity_by_method, pathway_sets
+
+
+def hvg_network_summary(hallmark_sets, all_genes, hvg_genes, tmin=15):
+    """Build the HVG Hallmark network and report retained and dropped pathways at tmin."""
+    all_genes = set(map(str, all_genes))
+    hvg_genes = sorted(set(map(str, hvg_genes)))
+    hallmark_all_genes = sorted(
+        {gene for genes in hallmark_sets.values() for gene in genes} & all_genes
+    )
+    hvg_hallmark_genes = sorted(set(hvg_genes) & set(hallmark_all_genes))
+    network_hvg = build_network(hallmark_sets, hvg_hallmark_genes)
+    net_sizes = (
+        network_hvg.groupby("source")["target"].nunique().sort_values(ascending=False)
+    )
+    hvg_pathways = sorted(net_sizes[net_sizes >= tmin].index)
+    dropped_pathways = sorted(net_sizes[net_sizes < tmin].index)
+    dropped_sizes = net_sizes.loc[dropped_pathways].rename("genes_in_hvg_set")
+    return {
+        "hallmark_all_genes": hallmark_all_genes,
+        "hvg_hallmark_genes": hvg_hallmark_genes,
+        "network_hvg": network_hvg,
+        "hvg_pathways": hvg_pathways,
+        "dropped_pathways": dropped_pathways,
+        "dropped_sizes": dropped_sizes,
+    }
+
+
+def load_or_build_corrected_expression(
+    combined,
+    hvg_mask,
+    hvg_hallmark_genes,
+    run_dir,
+    approach,
+    corrected_path,
+    library_size=10000,
+    seed=0,
+    force=False,
+):
+    """Load or compute scANVI-corrected log1p expression on the HVG Hallmark gene subset."""
+    corrected_path = Path(corrected_path)
+    manifest_path = corrected_path.with_name(f"{corrected_path.stem}_manifest.json")
+
+    if not force and corrected_path.exists():
+        return ad.read_h5ad(corrected_path), False
+
+    import scvi
+
+    combined_hvg = combined[:, hvg_mask].copy()
+    model_dir = Path(run_dir) / ("joint_scanvi" if approach == "joint" else "query")
+    model = scvi.model.SCANVI.load(str(model_dir), adata=combined_hvg)
+    if not combined_hvg.var_names.equals(model.adata.var_names):
+        raise ValueError("Combined HVG var_names do not match model var_names")
+
+    scvi.settings.seed = seed
+    np.random.seed(seed)
+    normalized = model.get_normalized_expression(
+        adata=combined_hvg,
+        library_size=int(library_size),
+        return_numpy=True,
+    )
+    gene_index = combined_hvg.var_names.get_indexer(hvg_hallmark_genes)
+    if not (gene_index >= 0).all():
+        raise ValueError("Missing HVG Hallmark genes in combined_hvg")
+    expression = np.log1p(normalized[:, gene_index]).astype(np.float32)
+
+    corrected = ad.AnnData(
+        X=expression,
+        obs=combined.obs.loc[
+            combined_hvg.obs_names, ["dataset", "cell_line", "match_group"]
+        ].copy(),
+        var=pd.DataFrame(index=pd.Index(hvg_hallmark_genes)),
+    )
+    manifest = {
+        "source": "scvi.model.SCANVI.get_normalized_expression",
+        "model_dir": str(model_dir),
+        "library_size": int(library_size),
+        "transform_batch": None,
+        "log1p": True,
+        "n_cells": int(expression.shape[0]),
+        "n_genes": int(expression.shape[1]),
+        "genes": list(hvg_hallmark_genes),
+        "expression_sha256": array_sha256(expression),
+    }
+    corrected.uns["mlm_sensitivity_manifest"] = manifest
+    corrected_path.parent.mkdir(parents=True, exist_ok=True)
+    corrected.write_h5ad(corrected_path)
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return corrected, True
+
+
+def concordance_metrics_by_representation(
+    concordance_by_rep, line_matches, line_order, rep_labels=None
+):
+    """Per-representation, per-cell-line concordance metrics and aggregated summary."""
+    if rep_labels is None:
+        rep_labels = list(concordance_by_rep.keys())
+    line_names = [str(line).replace("line_", "") for line in line_order]
+
+    metrics_rows = []
+    for label in rep_labels:
+        matrix = concordance_by_rep[label]
+        for cell_line in line_names:
+            match_key = (
+                cell_line if cell_line in line_matches.index else f"line_{cell_line}"
+            )
+            primary = str(line_matches.loc[match_key, "primary_match"])
+            runner_up = str(line_matches.loc[match_key, "second_match"])
+            order = matrix.loc[cell_line].sort_values(ascending=False)
+            primary_rank = (
+                int(order.index.get_loc(primary)) + 1
+                if primary in order.index
+                else np.nan
+            )
+            metrics_rows.append(
+                {
+                    "representation": label,
+                    "cell_line": cell_line,
+                    "primary_match": primary,
+                    "runner_up": runner_up,
+                    "primary_rho": float(matrix.loc[cell_line, primary]),
+                    "runner_up_rho": float(matrix.loc[cell_line, runner_up]),
+                    "primary_minus_runner_up": float(
+                        matrix.loc[cell_line, primary]
+                        - matrix.loc[cell_line, runner_up]
+                    ),
+                    "primary_rank": primary_rank,
+                    "primary_top1": primary_rank == 1,
+                }
+            )
+    metrics = pd.DataFrame(metrics_rows)
+    summary = (
+        metrics.groupby("representation", observed=True)
+        .agg(
+            n_lines=("cell_line", "nunique"),
+            n_primary_gt_runner_up=(
+                "primary_minus_runner_up",
+                lambda v: int((v > 0).sum()),
+            ),
+            median_primary_rho=("primary_rho", "median"),
+            min_primary_rho=("primary_rho", "min"),
+            median_runner_up_rho=("runner_up_rho", "median"),
+            median_primary_minus_runner_up=("primary_minus_runner_up", "median"),
+            n_primary_top1=("primary_top1", "sum"),
+            median_primary_rank=("primary_rank", "median"),
+        )
+        .reindex(rep_labels)
+    )
+    return metrics, summary
+
+
+def cross_representation_correlations(matrices_by_rep):
+    """Pairwise Spearman correlation between flattened concordance matrices."""
+    flattened = pd.DataFrame(
+        {
+            label: matrix.to_numpy(dtype=float).ravel()
+            for label, matrix in matrices_by_rep.items()
+        }
+    )
+    return flattened.corr(method="spearman")

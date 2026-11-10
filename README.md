@@ -16,9 +16,10 @@ logs/                       training logs (not tracked)
 data/                       raw and processed data (not tracked)
 models/                     HPO runs, model checkpoints, caches (not tracked)
 reproducibility/            frozen conda environments (GPU and CPU)
-config/config.yaml          paths, preprocessing & HPO settings
+config/config.yaml          paths, preprocessing, HPO, and plausibility settings
 src/                        preprocessing, HPO, and ranking code
-scripts/                    pipeline scripts (01-05)
+src/bio/                    shared clustering, matching, GSEA, MLM, concordance, and plot helpers
+scripts/                    pipeline scripts (01-05) and preprocessing validation
 notebooks/                  preprocessing, EDA, validation, plausibility
 run_preprocessing.sh        preprocessing wrapper
 run_hpo.sh                  HPO wrapper
@@ -30,31 +31,38 @@ Raw data and trained models are therefore not part of the repository.
 
 ## Environment
 
-The analysis uses Python 3.11 and a conda environment.
-Two specifications are provided:
+The analysis uses Python 3.11. Two conda specifications are provided:
 
 ```text
-reproducibility/scvi-environment.yml       GPU environment (torch 2.6.0+cu124)
-reproducibility/scvi-environment-cpu.yml   CPU environment (torch 2.6.0+cpu)
+reproducibility/scvi-environment.yml       GPU environment (torch 2.6.0+cu124), env `scvi`
+reproducibility/scvi-environment-cpu.yml   CPU environment (torch 2.6.0+cpu), env `scvi-cpu`
 ```
 
-Both deliberately create an environment named `scvi` so that the same commands work on a GPU machine and on a CPU-only machine.
+Use `scvi` for the reference GPU setup, and `scvi-cpu` when no CUDA GPU is available (for example on a WSL host).
 Install only one of them:
 
 ```bash
 # GPU machine
 conda env create -f reproducibility/scvi-environment.yml
+conda activate scvi
 
 # CPU-only machine
 conda env create -f reproducibility/scvi-environment-cpu.yml
+conda activate scvi-cpu
 
-conda activate scvi
 python -m pip check
 ```
 
 The GPU environment bundles the CUDA 12.4 runtime through the PyTorch wheels.
 A system-wide CUDA toolkit is not required, but the host driver must support CUDA 12.4 (Linux driver >= 550.54.14).
 A GPU is strongly recommended as the HPO sweep is slow on CPU.
+
+On hosts with an older system `libstdc++` (missing `GLIBCXX_3.4.29`, e.g. WSL), `import torch` fails inside numpy unless the environment library directory is on `LD_LIBRARY_PATH`:
+
+```bash
+conda env config vars set LD_LIBRARY_PATH=$CONDA_PREFIX/lib -n scvi-cpu
+conda activate scvi-cpu   # reactivate to apply
+```
 
 ## Data
 
@@ -83,7 +91,7 @@ The preprocessing step writes the processed objects to `data/processed/`: `genes
 ## Workflow
 
 All wrappers set `PYTHONPATH` to the repository root and can be run from any directory.
-Use the environment's Python (`conda activate scvi`).
+Use the environment's Python (`conda activate scvi` or `conda activate scvi-cpu`).
 
 ### 1. Preprocessing
 
@@ -131,32 +139,44 @@ best_models_primary_dynamic.csv dynamic-k rank-1 model per approach
 The line score is the geometric mean of the mixing, tumor-label specificity, and purity computed for each cell line.
 The run score averages the ten cell line scores with equal weight.
 
+### 4. Biological plausibility
+
+Run the notebooks in `notebooks/4_biological_plausibility/` in numeric order.
+`1_clustering_resolution` creates the shared artifact; the remaining notebooks
+consume it and write their caches under `models/validation/` and figures under
+`figures/BIOVAL/`. The notebooks are the analysis record and call the shared
+`src/bio/` helpers directly.
+
 ## Notebooks
 
-Notebooks are organized by stage and are meant to be run in order within each folder.
+Notebooks are organized by stage and are meant to be run in order within each
+folder. Executed notebooks are committed with their outputs so the main tables and
+figures can be inspected without rerunning the pipeline.
 
 | Folder | Notebook | What it does |
 | --- | --- | --- |
-| `1_preprocessing` | `01_gene_intersection` | Builds the shared tumor/cell line gene table (28,617 genes) |
-| | `02_cell_line_pp` | Interactive cell line preprocessing |
-| | `03_tumor_pp` | Interactive tumor preprocessing |
+| `1_preprocessing` | `01_gene_intersection` | Notebook counterpart of the gene-intersection script |
+| | `02_cell_line_pp` | Notebook counterpart of the cell line preprocessing script |
+| | `03_tumor_pp` | Notebook counterpart of the tumor preprocessing script |
 | `2_eda` | `EDA_combined` | Unintegrated combined UMAP before batch correction |
 | | `EDA_tumor` | Tumor QC, composition, donor/chemistry structure, network mixing |
 | | `EDA_cl` | Cell line QC, composition, and unintegrated UMAP |
-| `3_hpo_validation` | `HPOVAL_scvi_base` | Unsupervised scVI baseline for both approaches HPO winners |
+| `3_hpo_validation` | `HPOVAL_scvi_base` | Unsupervised scVI baseline for both approach winners |
 | | `HPOVAL_nb` | NB versus ZINB likelihood sensitivity |
 | | `HPOVAL_seeds` | Seed stability of the joint winner |
 | | `HPOVAL_dataset_batchkey` | Model batch key sensitivity (`dataset` versus `batch`) |
-| `4_biological_plausibility` | `1_clustering_resolution` | Joint only: Selects the tumor-only Leiden resolution and seed, saves the shared artifact |
-| | `2_best_matching_plausibility` | Joint only: Candidate matching, tumor DE/GSEA, MLM concordance, signature view |
-| | `3_scArches_plausibility` | The same downstream chain for the scArches winner |
-| | `4_mlm_gene_sets` | MLM representation sensitivity (corrected HVG, uncorrected HVG, full gene set) |
-| | `5_mlm_full_heatmap` | Joint-versus-scArches full group concordance |
-| | `6_mlm_no_prolif_pathways` | Concordance without proliferation pathways |
-| `exploration` | various | Exploratory QC, HVG, batch-key, UMAP, and model comparisons |
+| `4_biological_plausibility` | `1_clustering_resolution` | Selects the tumor-only Leiden resolution and seed, saves the shared artifact |
+| | `2_candidate_matching` | Tumor-only kNN candidate matching and match-confidence views |
+| | `3_tumor_programs` | Subpopulation DE, Hallmark GSEA, and the `tumor_4`/`tumor_5` contrast |
+| | `4_cell_line_gsea_mlm_concordance` | Direct DE/GSEA and signature view, MLM scoring, and pathway concordance |
+| | `5_mlm_representation_sensitivity` | MLM representation sensitivity (corrected HVG, uncorrected HVG, full gene set) |
+| | `6_scarches_plausibility` | Short scArches matching and MLM concordance check |
+| | `7_mlm_no_prolif_pathways` | Concordance without the shared proliferation pathways |
+| | `8_mlm_full_heatmap` | Joint-versus-scArches full MLM group concordance |
+| `exploration` | various | Historical QC, HVG, batch-key, UMAP, and model comparisons (code only) |
 
 See [`notebooks/README.md`](notebooks/README.md) for the detailed run order and shared artifact flow.
-The preprocessing notebooks document the interactive steps; the authoritative preprocessing path is the script pipeline.
+The preprocessing notebooks are interactive counterparts of the authoritative scripts.
 The four `3_hpo_validation` notebooks read the completed HPO runs and write their artifacts under `models/validation/`.
 
 The plausibility notebooks share the anndata object:
@@ -166,8 +186,9 @@ notebooks/4_biological_plausibility/adata_config10_joint/config10_joint_3k.h5ad
 ```
 
 `1_clustering_resolution` creates it from the processed data and the saved config-10 joint model with its latent representations.
-`2_best_matching_plausibility`, `3_scArches_plausibility`, `4_mlm_gene_sets`, `5_mlm_full_heatmap`, and `6_mlm_no_prolif_pathways` read it from the notebook's working directory.
+`2_candidate_matching` through `8_mlm_full_heatmap` read it from the notebook's working directory.
 The artifact is excluded from Git because of its size.
+Notebook outputs are stored in the notebooks. Standalone figure files are written under `figures/` and are excluded from Git.
 
 ## Selected models and key results
 
@@ -190,7 +211,7 @@ Post-HPO validation found that semi-supervision helps matching (scVI scores belo
 ## Outputs and ignored paths
 
 Generated data, models, caches, figures, and logs are excluded through `.gitignore`: `data/`, `models/`, `figures/`, `logs/`, `scvi_log/`, `archive/`, `adata_config10_joint/`, and `notebooks/counterfactual/`.
-The repository therefore contains code and executed notebooks only.
+The repository therefore contains code, documentation, and executed notebooks with their outputs.
 
 ## Citation
 

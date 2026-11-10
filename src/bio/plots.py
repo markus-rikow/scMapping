@@ -722,3 +722,52 @@ def plot_pathway_similarity(
     if path is not None:
         fig.savefig(path, dpi=300, bbox_inches="tight")
     return fig
+
+
+def plot_full_concordance(
+    matrix,
+    line_order,
+    tumor_order,
+    path=None,
+    title="Full group concordance",
+    cmap="RdBu_r",
+    center=0,
+    vmin=-1,
+    vmax=1,
+    cbar_label="Spearman correlation",
+):
+    size = max(10, 0.42 * len(matrix))
+    fig, ax = plt.subplots(figsize=(size, size))
+    sns.heatmap(
+        matrix,
+        ax=ax,
+        cmap=cmap,
+        center=center,
+        vmin=vmin,
+        vmax=vmax,
+        square=True,
+        linewidths=0.15,
+        cbar_kws={"label": cbar_label},
+    )
+    n = len(line_order)
+    ax.axhline(n, color="black", linewidth=1.2)
+    ax.axvline(n, color="black", linewidth=1.2)
+    ax.add_patch(
+        Rectangle(
+            (n, n),
+            len(tumor_order),
+            len(tumor_order),
+            fill=False,
+            edgecolor="black",
+            linewidth=1.6,
+        )
+    )
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=7)
+    ax.set_yticklabels(ax.get_yticklabels(), fontsize=7)
+    ax.set_xlabel("Group")
+    ax.set_ylabel("Group")
+    ax.set_title(title, fontsize=11)
+    plt.tight_layout()
+    if path is not None:
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+    return fig

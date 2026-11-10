@@ -280,3 +280,171 @@ def subpopulation_distances(
         matrix = matrix.loc[row_order]
     return matrix
 
+def map_clusters_by_overlap(source_groups, target_labels, is_tumor):
+    """Map source tumor cluster labels to target cluster IDs by maximum cell overlap."""
+    source_tumor = (
+        pd.Series(source_groups)[np.asarray(is_tumor, dtype=bool)]
+        .astype(str)
+        .str.replace("^tumor_", "", regex=True)
+    )
+    target_tumor = (
+        pd.Series(target_labels)[np.asarray(is_tumor, dtype=bool)]
+        .astype(str)
+        .str.replace("^tumor_", "", regex=True)
+    )
+    overlap = pd.crosstab(source_tumor.to_numpy(), target_tumor.to_numpy())
+    mapping = overlap.idxmax(axis=1).to_dict()
+    return mapping, overlap
+
+
+def scarches_cluster_diagnostics(
+    obs,
+    sc_group_col="match_group_scarches",
+    joint_col="tumor_leiden_res0.9",
+    label_col="label",
+    dataset_col="dataset",
+):
+    """Cluster size table and partition agreement diagnostics for the scArches tumor clusters."""
+    is_tumor = obs[dataset_col].eq("tumor").to_numpy()
+    tumor_labels = (
+        obs.loc[is_tumor, sc_group_col]
+        .astype(str)
+        .str.replace("^tumor_", "", regex=True)
+    )
+    cluster_order = sorted(tumor_labels.unique(), key=int)
+    sizes = tumor_labels.value_counts().reindex(cluster_order)
+    share = sizes / sizes.sum()
+    joint_labels = obs.loc[is_tumor, joint_col].astype(str)
+    pelka_labels = obs.loc[is_tumor, label_col].astype(str)
+
+    ct = pd.crosstab(
+        obs.loc[is_tumor, sc_group_col].astype(str),
+        pelka_labels,
+    )
+    dominant_label = ct.idxmax(axis=1)
+    prolif_clusters = sorted(
+        [
+            group
+            for group in ct.index
+            if "cE03" in str(dominant_label.loc[group])
+        ],
+        key=tumor_group_sort_key,
+    )
+
+    size_table = pd.DataFrame({"cells": sizes.astype(int), "share": share.round(3)})
+    metrics = {
+        "n_clusters": len(cluster_order),
+        "min_size": int(sizes.min()),
+        "max_size": int(sizes.max()),
+        "max_share": float(share.max()),
+        "fragments_lt_50": int((sizes < 50).sum()),
+        "ari_vs_joint": float(adjusted_rand_score(joint_labels, tumor_labels)),
+        "ami_vs_pelka": float(adjusted_mutual_info_score(pelka_labels, tumor_labels)),
+        "cE03_clusters": prolif_clusters,
+    }
+    return size_table, metrics
+
+
+def load_or_build_scarches_artifact(
+    matching_artifact,
+    joint_artifact,
+    model_dir,
+    hvg_file,
+    num_hvg,
+    tumor_res,
+    leiden_seed,
+    graph_seed=0,
+    force=False,
+):
+    """Load the cached scArches matching artifact or build it from the query model."""
+    matching_artifact = Path(matching_artifact)
+    joint_col = f"tumor_leiden_res{tumor_res}"
+    required_obs = {
+        "dataset",
+        "cell_line",
+        "label",
+        joint_col,
+        "match_group_scarches",
+    }
+    required_obsm = {"X_latent", "X_latent_scarches", "X_umap_scarches"}
+    expected_settings = {
+        "num_hvg": str(int(num_hvg)),
+        "tumor_res": str(float(tumor_res)),
+        "leiden_seed": str(int(leiden_seed)),
+        "graph_seed": str(int(graph_seed)),
+    }
+
+    if matching_artifact.exists() and not force:
+        cached = ad.read_h5ad(matching_artifact)
+        raw_settings = dict(cached.uns.get("scarches_matching_settings", {}))
+        cached_core = {
+            k: str(raw_settings.get(k))
+            for k in expected_settings
+        }
+        if (
+            cached_core == expected_settings
+            and required_obs.issubset(cached.obs.columns)
+            and required_obsm.issubset(cached.obsm.keys())
+        ):
+            return cached, False
+
+    import scvi
+
+    hvg_genes = [gene for gene in Path(hvg_file).read_text().splitlines() if gene]
+    if len(hvg_genes) != int(num_hvg):
+        raise ValueError(f"Expected {num_hvg} HVGs, found {len(hvg_genes)}")
+
+    combined = ad.read_h5ad(joint_artifact)
+    combined_hvg = combined[:, hvg_genes].copy()
+    model = scvi.model.SCANVI.load(str(model_dir), adata=combined_hvg)
+    if not combined_hvg.var_names.equals(model.adata.var_names):
+        raise ValueError("Combined HVG var_names do not match model var_names")
+
+    latent = np.asarray(model.get_latent_representation(combined_hvg))
+    combined.obsm["X_latent_scarches"] = latent
+
+    sc.pp.neighbors(combined, use_rep="X_latent_scarches", random_state=graph_seed)
+    sc.tl.umap(combined, random_state=graph_seed)
+    combined.obsm["X_umap_scarches"] = combined.obsm["X_umap"].copy()
+
+    is_tumor = combined.obs["dataset"].eq("tumor").to_numpy()
+    tumor = combined[is_tumor].copy()
+    sc.pp.neighbors(tumor, use_rep="X_latent_scarches", random_state=graph_seed)
+    sc.tl.leiden(
+        tumor,
+        resolution=tumor_res,
+        key_added="tumor_leiden_scarches",
+        random_state=leiden_seed,
+        flavor="igraph",
+        n_iterations=2,
+    )
+    groups = pd.Series(
+        pd.NA, index=combined.obs.index, dtype="string", name="match_group_scarches"
+    )
+    groups.loc[tumor.obs_names] = "tumor_" + tumor.obs["tumor_leiden_scarches"].astype(str)
+    groups.loc[combined.obs.index[~is_tumor]] = (
+        "line_" + combined.obs.loc[~is_tumor, "cell_line"].astype(str)
+    )
+    if groups.isna().any():
+        raise ValueError("Missing match_group_scarches entries")
+    combined.obs["match_group_scarches"] = groups
+
+    artifact = ad.AnnData(
+        X=np.zeros((combined.n_obs, 0), dtype=np.float32),
+        obs=combined.obs[
+            ["dataset", "cell_line", "label", joint_col, "match_group_scarches"]
+        ].copy(),
+    )
+    artifact.obsm["X_latent"] = np.asarray(combined.obsm["X_latent"])
+    artifact.obsm["X_latent_scarches"] = latent
+    artifact.obsm["X_umap_scarches"] = np.asarray(combined.obsm["X_umap_scarches"])
+    artifact.uns["scarches_matching_settings"] = {
+        "model_dir": str(model_dir),
+        "num_hvg": int(num_hvg),
+        "tumor_res": float(tumor_res),
+        "leiden_seed": int(leiden_seed),
+        "graph_seed": int(graph_seed),
+    }
+    matching_artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_h5ad(matching_artifact, compression="gzip")
+    return artifact, True

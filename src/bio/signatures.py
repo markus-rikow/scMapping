@@ -448,3 +448,221 @@ def pairwise_hallmark_summary(pairwise_gsea, group1="tumor_4", group2="tumor_5",
         "lead_genes",
     ]
     return sig.sort_values("nes", ascending=False)[cols].reset_index(drop=True)
+
+
+def load_or_run_line_vs_tumor_de(
+    model,
+    adata_hvg,
+    groups_de,
+    line_groups,
+    tumor_subpops,
+    line_vs_tumor_dir,
+    model_label="config_10_joint",
+    batch_correction=True,
+    mode="change",
+    delta=0.25,
+    force=False,
+):
+    """Load or compute direct cell-line versus tumor-subpopulation DE and rankings."""
+    line_vs_tumor_dir = Path(line_vs_tumor_dir)
+    line_vs_tumor_dir.mkdir(parents=True, exist_ok=True)
+    line_de = {}
+    line_rankings = {}
+    loaded_model = None
+    hvg_data = None
+
+    for cell_line in line_groups:
+        for subpopulation in tumor_subpops:
+            pair = f"{cell_line}_vs_{subpopulation}"
+            de_path = line_vs_tumor_dir / f"scvi_de_{pair}.csv"
+            ranking_path = line_vs_tumor_dir / f"ranking_{pair}.csv"
+            if de_path.exists() and not force:
+                de = pd.read_csv(de_path)
+            else:
+                if loaded_model is None:
+                    loaded_model, hvg_data = _ensure_model_and_adata(model, adata_hvg)
+                de = line_vs_subpopulation_de(
+                    loaded_model,
+                    hvg_data,
+                    groups_de,
+                    cell_line,
+                    subpopulation,
+                    batch_correction=batch_correction,
+                    mode=mode,
+                    delta=delta,
+                )
+                de.to_csv(de_path, index=False)
+            if ranking_path.exists() and not force:
+                ranking = pd.read_csv(ranking_path)
+            else:
+                ranking = make_lfc_ranking(de)
+                ranking.to_csv(ranking_path, index=False)
+            line_de[(cell_line, subpopulation)] = de
+            line_rankings[(cell_line, subpopulation)] = ranking
+
+    qc = de_qc(
+        {f"{line}_vs_{subpop}": de for (line, subpop), de in line_de.items()},
+        group_name="comparison",
+    )
+    qc.to_csv(line_vs_tumor_dir / "line_vs_tumor_de_qc.csv", index=False)
+    (line_vs_tumor_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "model": model_label,
+                "batch_correction": batch_correction,
+                "signature_mode": mode,
+                "signature_delta": delta,
+                "direction": "lfc_mean > 0 means up in the cell line relative to the tumor subpopulation",
+                "n_comparisons": len(line_de),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return line_de, line_rankings, qc
+
+
+def load_or_run_line_vs_tumor_gsea(
+    line_rankings,
+    line_vs_tumor_dir,
+    gmt_path,
+    hallmark_sets,
+    seed=0,
+    permutations=1000,
+    min_size=15,
+    max_size=500,
+    force=False,
+):
+    """Load or compute preranked Hallmark GSEA across all cell-line vs tumor-subpopulation pairs."""
+    line_vs_tumor_dir = Path(line_vs_tumor_dir)
+    out_path = line_vs_tumor_dir / "hallmark_prerank_line_vs_tumor.csv"
+    if out_path.exists() and not force:
+        return pd.read_csv(out_path)
+
+    gsea_results = []
+    for (cell_line, subpopulation), ranking in line_rankings.items():
+        result = run_hallmark_prerank(
+            ranking,
+            f"{cell_line}-vs-{subpopulation}",
+            gmt_path,
+            hallmark_sets,
+            seed=seed,
+            permutations=permutations,
+            min_size=min_size,
+            max_size=max_size,
+        )
+        result.insert(0, "cell_line", str(cell_line).replace("line_", ""))
+        result.insert(1, "subpop", subpopulation)
+        gsea_results.append(result)
+    results_gsea_line_vs_tumor = pd.concat(gsea_results, ignore_index=True)
+    results_gsea_line_vs_tumor.to_csv(out_path, index=False)
+    return results_gsea_line_vs_tumor
+
+
+def shared_proliferation_pathways(
+    results_gsea_tumor,
+    proliferative=("tumor_4", "tumor_5", "tumor_12"),
+    fdr=0.05,
+    min_abs_nes=1.0,
+):
+    """Hallmark pathways significantly positively enriched in all proliferative subpopulations."""
+    proliferative = list(proliferative)
+    subset = results_gsea_tumor[
+        results_gsea_tumor["subpopulation"].isin(proliferative)
+        & results_gsea_tumor["fdr_qval"].le(fdr)
+        & results_gsea_tumor["nes"].abs().ge(min_abs_nes)
+    ]
+    return sorted(
+        pathway
+        for pathway, values in subset.groupby("pathway")["nes"]
+        if len(values) == len(proliferative) and bool((values > 0).all())
+    )
+
+
+def signature_matrix(line_signature, tumor_signature, line_order, tumor_order, exclude=()):
+    """Spearman correlation matrix between cell line and tumor signatures."""
+    pathways = [
+        pathway
+        for pathway in line_signature.columns
+        if pathway in set(tumor_signature.index) and pathway not in set(exclude)
+    ]
+    line = line_signature.loc[line_order, pathways]
+    tumor = tumor_signature.loc[pathways, tumor_order]
+    return pd.DataFrame(
+        {
+            cell_line: {
+                subpopulation: line.loc[cell_line].corr(
+                    tumor.loc[:, subpopulation], method="spearman"
+                )
+                for subpopulation in tumor_order
+            }
+            for cell_line in line_order
+        }
+    ).T
+
+
+def signature_summary(matrix, matches):
+    """Primary and runner-up ranks from a cell line x subpopulation similarity matrix."""
+    rows = []
+    for cell_line in matrix.index:
+        match_key = cell_line if cell_line in matches.index else f"line_{cell_line}"
+        order = matrix.loc[cell_line].sort_values(ascending=False)
+        primary = str(matches.loc[match_key, "primary_match"])
+        runner_up = str(matches.loc[match_key, "second_match"])
+        rows.append(
+            {
+                "cell_line": cell_line,
+                "primary_match": primary,
+                "runner_up": runner_up,
+                "best_match": str(order.index[0]),
+                "primary_rank": int(order.index.get_loc(primary)) + 1,
+                "runner_up_rank": int(order.index.get_loc(runner_up)) + 1,
+                "primary_top1": order.index[0] == primary,
+                "primary_top3": int(order.index.get_loc(primary)) < 3,
+                "n_subpopulations": len(order),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def signature_readout_and_null(signature_sets, matches, n_perm=1000, seed=0):
+    """Build the combined signature readout table and permutation null test summary."""
+    first_matrix = next(iter(signature_sets.values()))
+    line_labels = list(first_matrix.index)
+    n_subpops = first_matrix.shape[1]
+
+    readout_rows = []
+    for cell_line in line_labels:
+        match_key = cell_line if cell_line in matches.index else f"line_{cell_line}"
+        primary = str(matches.loc[match_key, "primary_match"])
+        runner_up = str(matches.loc[match_key, "second_match"])
+        record = {
+            "cell_line": cell_line,
+            "latent_primary": primary,
+            "latent_runner_up": runner_up,
+        }
+        for name, similarity in signature_sets.items():
+            order = similarity.loc[cell_line].sort_values(ascending=False)
+            record[f"{name}: best"] = str(order.index[0])
+            record[f"{name}: primary rank"] = int(order.index.get_loc(primary)) + 1
+            record[f"{name}: runner-up rank"] = int(order.index.get_loc(runner_up)) + 1
+        readout_rows.append(record)
+    readout = pd.DataFrame(readout_rows)
+
+    rng = np.random.default_rng(seed)
+    null = rng.integers(1, n_subpops + 1, size=(n_perm, len(line_labels)))
+    null_rows = []
+    for name in signature_sets:
+        observed = readout[f"{name}: primary rank"].to_numpy()
+        p_value = float((np.median(null, axis=1) <= np.median(observed)).mean())
+        null_rows.append(
+            {
+                "signature_set": name,
+                "median_primary_rank": float(np.median(observed)),
+                "null_median_rank": 0.5 * (n_subpops + 1),
+                "top1_rate": float((observed == 1).mean()),
+                "top3_rate": float((observed <= 3).mean()),
+                "permutation_p": p_value,
+            }
+        )
+    return readout, pd.DataFrame(null_rows)

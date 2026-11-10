@@ -332,3 +332,393 @@ def plot_tumor_gsea_heatmap(
     if path is not None:
         fig.savefig(path, dpi=300, bbox_inches="tight")
     return fig
+
+
+def plot_signature_match(
+    signature_sets,
+    matches,
+    line_order,
+    tumor_order,
+    path=None,
+):
+    """Plot cell-line vs tumor GSEA signature correlation panels with match boxes and best-match stars."""
+    row_order = [str(line).replace("line_", "") for line in line_order]
+    fig, axes = plt.subplots(
+        ncols=len(signature_sets),
+        figsize=(9.5 * len(signature_sets), 5.8),
+        squeeze=False,
+    )
+    for ax, (name, similarity) in zip(axes[0], signature_sets.items()):
+        values = similarity.loc[row_order, tumor_order]
+        image = ax.imshow(
+            values.to_numpy(float),
+            aspect="auto",
+            cmap="RdBu_r",
+            vmin=-1,
+            vmax=1,
+            interpolation="nearest",
+        )
+        ax.set_xticks(np.arange(len(tumor_order)))
+        ax.set_xticklabels(tumor_order, rotation=90, fontsize=8)
+        ax.set_yticks(np.arange(len(row_order)))
+        ax.set_yticklabels(row_order, fontsize=9)
+        ax.set_xlabel("Tumor subpopulation")
+        ax.set_title(f"Cell line vs tumor signature correlation: {name}", fontsize=10)
+        fig.colorbar(image, ax=ax, fraction=0.046, pad=0.02).set_label("Spearman rho")
+
+        for y, cell_line in enumerate(row_order):
+            key = _match_key(matches, cell_line)
+            for group, color, linestyle in (
+                (str(matches.loc[key, "primary_match"]), "black", "-"),
+                (str(matches.loc[key, "second_match"]), "dimgray", "--"),
+            ):
+                if group in tumor_order:
+                    x = list(tumor_order).index(group)
+                    ax.add_patch(
+                        Rectangle(
+                            (x - 0.5, y - 0.5),
+                            1,
+                            1,
+                            fill=False,
+                            edgecolor=color,
+                            linewidth=1.8,
+                            linestyle=linestyle,
+                        )
+                    )
+            best = values.loc[cell_line].idxmax()
+            ax.plot(
+                list(tumor_order).index(best),
+                y,
+                marker="*",
+                color="white",
+                markeredgecolor="black",
+                markersize=11,
+                zorder=5,
+            )
+
+        previous_primary = None
+        for y, cell_line in enumerate(row_order):
+            key = _match_key(matches, cell_line)
+            primary = str(matches.loc[key, "primary_match"])
+            if previous_primary is not None and primary != previous_primary:
+                ax.axhline(y - 0.5, color="black", linewidth=1.2)
+            previous_primary = primary
+
+    axes[0, 0].set_ylabel("Cell line")
+    fig.legend(
+        handles=[
+            Line2D([0], [0], color="black", lw=2, label="latent primary match"),
+            Line2D(
+                [0], [0], color="dimgray", lw=2, linestyle="--", label="latent runner-up"
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="white",
+                markeredgecolor="black",
+                linestyle="",
+                markersize=11,
+                label="best-matching subpopulation",
+            ),
+        ],
+        loc="lower center",
+        ncol=3,
+        frameon=False,
+        bbox_to_anchor=(0.5, -0.05),
+    )
+    plt.tight_layout()
+    if path is not None:
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+    return fig
+
+
+def plot_domain_shift(
+    domain_shift_df, path=None, title="Hallmark domain shift", n_extreme=4
+):
+    selected = list(domain_shift_df.head(n_extreme).index) + list(
+        domain_shift_df.tail(n_extreme).index
+    )
+    selected = sorted(
+        set(selected),
+        key=lambda pathway: -abs(domain_shift_df.loc[pathway, "difference"]),
+    )
+    fig, ax = plt.subplots(figsize=(8.5, 0.45 * len(selected) + 2))
+    sns.heatmap(
+        domain_shift_df.loc[selected, ["difference"]],
+        ax=ax,
+        cmap="RdBu_r",
+        center=0,
+        annot=True,
+        fmt=".2f",
+        linewidths=0.3,
+        cbar_kws={"label": "MLM score difference (cell line - tumor)"},
+    )
+    ax.set_title(title)
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    plt.tight_layout()
+    if path is not None:
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+    return fig
+
+
+def plot_domain_shift_representations(
+    shift_wide, domain_shift_by_rep, path=None, n_extreme=4
+):
+    selected = set()
+    for table in domain_shift_by_rep.values():
+        selected.update(table.head(n_extreme).index)
+        selected.update(table.tail(n_extreme).index)
+    selected = sorted(
+        selected,
+        key=lambda pathway: -abs(shift_wide.loc[pathway, "full_uncorrected"]),
+    )
+    fig, ax = plt.subplots(figsize=(8.5, 0.45 * len(selected) + 2))
+    sns.heatmap(
+        shift_wide.loc[selected],
+        ax=ax,
+        cmap="RdBu_r",
+        center=0,
+        annot=True,
+        fmt=".2f",
+        linewidths=0.3,
+        cbar_kws={"label": "MLM score difference (cell line - tumor)"},
+    )
+    ax.set_title("Domain shift of Hallmark MLM scores across representations")
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=20, ha="right")
+    plt.tight_layout()
+    if path is not None:
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+    return fig
+
+
+def plot_concordance(
+    matrix, matches, path=None, title="Cell line / tumor concordance"
+):
+    fig, ax = plt.subplots(figsize=(18, 6))
+    sns.heatmap(
+        matrix,
+        ax=ax,
+        cmap="RdBu_r",
+        center=0,
+        vmin=-1,
+        vmax=1,
+        annot=True,
+        fmt=".2f",
+        linewidths=0.3,
+        cbar_kws={"label": "Spearman correlation"},
+    )
+    add_match_boxes(ax, matrix, matches)
+    ax.set_xlabel("Tumor subpopulation")
+    ax.set_ylabel("Cell line")
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+    ax.set_title(title)
+    plt.tight_layout()
+    if path is not None:
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+    return fig
+
+
+def plot_concordance_representations(concordance_by_rep, matches, path=None):
+    labels = list(concordance_by_rep.keys())
+    fig, axes = plt.subplots(ncols=len(labels), figsize=(7.5 * len(labels), 6))
+    for ax, label in zip(axes, labels):
+        matrix = concordance_by_rep[label]
+        sns.heatmap(
+            matrix,
+            ax=ax,
+            cmap="RdBu_r",
+            center=0,
+            vmin=-1,
+            vmax=1,
+            linewidths=0.3,
+            cbar=False,
+            xticklabels=True,
+            yticklabels=(label == labels[0]),
+        )
+        add_match_boxes(ax, matrix, matches)
+        ax.set_title(label)
+        ax.set_xlabel("Tumor subpopulation")
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=8)
+        ax.set_yticklabels(ax.get_yticklabels(), fontsize=8)
+        ax.set_ylabel("Cell line" if label == labels[0] else "")
+    fig.subplots_adjust(right=0.9, wspace=0.25)
+    colorbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+    fig.colorbar(axes[0].collections[0], cax=colorbar_ax).set_label(
+        "Spearman correlation of MLM pathway scores"
+    )
+    if path is not None:
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+    return fig
+
+
+def plot_noprolif_comparison(
+    all_pathway,
+    no_prolif,
+    matches,
+    n_shared,
+    n_noprolif,
+    path=None,
+):
+    labels = list(all_pathway.keys())
+    fig, axes = plt.subplots(2, len(labels), figsize=(7.5 * len(labels), 8.5))
+    for column, label in enumerate(labels):
+        for row, (matrix, title) in enumerate(
+            [
+                (all_pathway[label], f"{label}: all {n_shared} shared pathways"),
+                (
+                    no_prolif[label],
+                    f"{label}: {n_noprolif} pathways without proliferation",
+                ),
+            ]
+        ):
+            ax = axes[row, column]
+            sns.heatmap(
+                matrix,
+                ax=ax,
+                cmap="RdBu_r",
+                center=0,
+                vmin=-1,
+                vmax=1,
+                linewidths=0.3,
+                cbar=False,
+                xticklabels=True,
+                yticklabels=(column == 0),
+            )
+            add_match_boxes(ax, matrix, matches)
+            ax.set_title(title, fontsize=10)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=7)
+            ax.set_yticklabels(ax.get_yticklabels(), fontsize=8)
+            ax.set_xlabel("Tumor subpopulation" if row == 1 else "")
+            ax.set_ylabel("Cell line" if column == 0 else "")
+    fig.subplots_adjust(right=0.9, wspace=0.25, hspace=0.35)
+    colorbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+    fig.colorbar(axes[0, 0].collections[0], cax=colorbar_ax).set_label(
+        "Spearman correlation of MLM pathway scores"
+    )
+    if path is not None:
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+    return fig
+
+
+def plot_pathway_similarity(
+    similarity_by_method,
+    matches,
+    line_order,
+    tumor_order,
+    methods=("z_dist | tumor_sig", "centered_spearman | tumor_sig"),
+    path=None,
+):
+    """Plot tumor z-space and tumor-centered Spearman pathway similarity heatmaps."""
+    row_order = [str(line).replace("line_", "") for line in line_order]
+    plot_methods = [m for m in methods if m in similarity_by_method]
+    if not plot_methods:
+        plot_methods = list(similarity_by_method.keys())[:2]
+
+    fig, axes = plt.subplots(
+        ncols=len(plot_methods),
+        figsize=(9.5 * len(plot_methods), 5.8),
+        squeeze=False,
+    )
+    for ax, method in zip(axes[0], plot_methods):
+        use_z = method.startswith("z_dist")
+        similarity = similarity_by_method[method].reindex(
+            index=row_order, columns=tumor_order
+        )
+        if use_z:
+            image = ax.imshow(
+                similarity.to_numpy(float),
+                aspect="auto",
+                cmap="viridis",
+                interpolation="nearest",
+            )
+            title = "Similarity in tumor z-space"
+            colorbar_label = "similarity (-Euclidean distance)"
+        else:
+            image = ax.imshow(
+                similarity.to_numpy(float),
+                aspect="auto",
+                cmap="RdBu_r",
+                vmin=-1,
+                vmax=1,
+                interpolation="nearest",
+            )
+            title = "Spearman correlation of centered pathway profiles"
+            colorbar_label = "Spearman rho"
+
+        ax.set_xticks(np.arange(len(tumor_order)))
+        ax.set_xticklabels(tumor_order, rotation=90, fontsize=8)
+        ax.set_yticks(np.arange(len(row_order)))
+        ax.set_yticklabels(row_order, fontsize=9)
+        ax.set_xlabel("Tumor subpopulation")
+        ax.set_title(title, fontsize=11)
+        fig.colorbar(image, ax=ax, fraction=0.046, pad=0.02).set_label(colorbar_label)
+
+        for y, cell_line in enumerate(row_order):
+            key = _match_key(matches, cell_line)
+            for group, color, linestyle in (
+                (str(matches.loc[key, "primary_match"]), "black", "-"),
+                (str(matches.loc[key, "second_match"]), "dimgray", "--"),
+            ):
+                if group in tumor_order:
+                    x = list(tumor_order).index(group)
+                    ax.add_patch(
+                        Rectangle(
+                            (x - 0.5, y - 0.5),
+                            1,
+                            1,
+                            fill=False,
+                            edgecolor=color,
+                            linewidth=1.8,
+                            linestyle=linestyle,
+                        )
+                    )
+            best = similarity.loc[cell_line].idxmax()
+            ax.plot(
+                list(tumor_order).index(best),
+                y,
+                marker="*",
+                color="white",
+                markeredgecolor="black",
+                markersize=11,
+                zorder=5,
+            )
+
+        previous_primary = None
+        for y, cell_line in enumerate(row_order):
+            key = _match_key(matches, cell_line)
+            primary = str(matches.loc[key, "primary_match"])
+            if previous_primary is not None and primary != previous_primary:
+                ax.axhline(y - 0.5, color="black", linewidth=1.2)
+            previous_primary = primary
+
+    axes[0, 0].set_ylabel("Cell line")
+    fig.legend(
+        handles=[
+            Line2D([0], [0], color="black", lw=2, label="latent primary match"),
+            Line2D(
+                [0], [0], color="dimgray", lw=2, linestyle="--", label="latent runner-up"
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="white",
+                markeredgecolor="black",
+                linestyle="",
+                markersize=11,
+                label="best-scoring subpopulation",
+            ),
+        ],
+        loc="lower center",
+        ncol=3,
+        frameon=False,
+        bbox_to_anchor=(0.5, -0.05),
+    )
+    plt.tight_layout()
+    if path is not None:
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+    return fig

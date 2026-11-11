@@ -142,7 +142,7 @@ The run score averages the ten cell line scores with equal weight.
 ### 4. Biological plausibility
 
 Run the notebooks in `notebooks/4_biological_plausibility/` in numeric order.
-`1_clustering_resolution` creates the shared artifact; the remaining notebooks
+`1_clustering_resolution` creates the shared artifact. The remaining notebooks
 consume it and write their caches under `models/validation/` and figures under
 `figures/BIOVAL/`. The notebooks are the analysis record and call the shared
 `src/bio/` helpers directly.
@@ -173,7 +173,7 @@ figures can be inspected without rerunning the pipeline.
 | | `6_scarches_plausibility` | Short scArches matching and MLM concordance check |
 | | `7_mlm_no_prolif_pathways` | Concordance without the shared proliferation pathways |
 | | `8_mlm_full_heatmap` | Joint-versus-scArches full MLM group concordance |
-| `exploration` | various | Historical QC, HVG, batch-key, UMAP, and model comparisons (code only) |
+| `exploration` | various | Historical QC, HVG, batch-key, UMAP, and model comparisons (committed with outputs) |
 
 See [`notebooks/README.md`](notebooks/README.md) for the detailed run order and shared artifact flow.
 The preprocessing notebooks are interactive counterparts of the authoritative scripts.
@@ -199,7 +199,7 @@ The fixed-k ranking selected:
 | Joint scANVI | 10 | 3,000 | 3 | 256 | 10 | gene-batch | 0.679 |
 | Reference-query scArches | 47 | 10,000 | 1 | 256 | 10 | gene-batch | 0.520 |
 
-The joint representation was carried forward as the primary analysis; the scArches representation serves as a reference-query sensitivity view.
+The joint representation was carried forward as the primary analysis. The scArches representation serves as a reference-query sensitivity view.
 
 At tumor-only Leiden resolution 0.9 with seed 3, the tumor cells form 18 subpopulations.
 The combined artifact contains 110,293 cells: 108,131 tumor epithelial cells and 2,162 cells from ten CRC cell lines.

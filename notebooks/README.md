@@ -33,7 +33,7 @@ Executed notebooks are committed with their outputs.
 
    | Notebook | Role |
    | --- | --- |
-   | `1_clustering_resolution` | Selects the tumor-only resolution and seed; writes the shared artifact |
+   | `1_clustering_resolution` | Selects the tumor-only resolution and seed and writes the shared artifact |
    | `2_candidate_matching` | Tumor-only kNN composition, candidates, margins, k sensitivity |
    | `3_tumor_programs` | Subpopulation DE and Hallmark GSEA |
    | `4_cell_line_gsea_mlm_concordance` | Direct DE/GSEA and signature view, MLM scoring, pathway concordance |
@@ -46,8 +46,8 @@ Executed notebooks are committed with their outputs.
    read it and the cached DE/GSEA/MLM results.
 
 6. Exploration (`exploration/`): historical checks and inspection plots.
-   These are not required for the main results, are kept without outputs, and
-   some depend on untracked model checkpoints.
+   These are not required for the main results and are committed with their
+   outputs. Some depend on untracked model checkpoints.
 
 ## Shared artifact
 

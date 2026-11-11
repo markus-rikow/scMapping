@@ -50,7 +50,7 @@ def build_combined_full_adata(
     )
 
     # Bool columns (e.g. mlh1_status) gain NaN on the other dataset, which turns
-    # them into plain object; h5py cannot write that, so keep them categorical.
+    # them into plain object. h5py cannot write that, so keep them categorical.
     for col in combined_full.obs.columns:
         if combined_full.obs[col].dtype == object:
             non_null = combined_full.obs[col].dropna()
@@ -340,7 +340,7 @@ def select_leiden_seed(
 
     if valid_seeds.empty:
         raise ValueError(
-            "No seed passes the cluster-size screens; review the resolution."
+            "No seed passes the cluster-size screens. Review the resolution."
         )
 
     selected_seed = int(

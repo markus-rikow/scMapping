@@ -33,7 +33,7 @@ def build_network(hallmark_sets, genes):
 
 
 def score_cells(adata, network, tmin=15, raw=False):
-    """Score every cell with decoupler.mt.mlm; returns scores and adjusted p-values."""
+    """Score every cell with decoupler.mt.mlm and return scores and adjusted p-values."""
     scored = adata.copy()
     dc.mt.mlm(data=scored, net=network.copy(), tmin=tmin, raw=raw, verbose=False)
     scores = scored.obsm["score_mlm"].copy()
